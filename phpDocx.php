@@ -3,29 +3,30 @@
 	require_once dirname(__FILE__)."/lib/pclzip.lib.php";
 
 	class phpdocx{
-		
+
 		private $template;
-		private $tmpDir = "/tmp/phpdocx"; // must be writable
+		private $tmpDir = "/tmp/"; // must be writable
 		private $assigned_field = array();
 		private $assigned_block = array();
 		private $assigned_nested_block = array();
+                private $assigned_table=array();
 		private $block_content = array();
 		private $block_count = array();
 		private $images = array();
 		private $nested_block_count = array();
 
 		public function __construct($template){
-		
+
 			if(file_exists($template)){
 				$this->template = $template;
 			} else {
 				throw new Exception("The template ".$template." was not found !");
 			}
-			
-		
+
+
 		}
-		
-		/* the ref will be used to assign this image later 
+
+		/* the ref will be used to assign this image later
 		 * You can use whatever you want
 		 * */
 		public function addImage($ref,$file){
@@ -39,37 +40,33 @@
 				throw new Exception($file.' does not exist');
 			}
 		}
-		
+
 		public function assign($field,$value){
 			$this->assigned_field[$field] = $this->filter($value);
 		}
-		
-		public function assignToHeader($field,$value){
-			$this->assigned_header_field[$field] = $this->filter($value);
-		}
-		
-		public function assignToFooter($field,$value){
-			$this->assigned_footer_field[$field] = $this->filter($value);
-		}
-		
+
 		public function assignBlock($blockname,$values){
 			$this->assigned_block[$blockname] = $values;
 		}
-		
+
 		public function assignNestedBlock($blockname,$values,$parent){
 			array_push($this->assigned_nested_block,array("block"=>$blockname,"values"=>$values,"parent"=>$parent));
 		}
-		
+
+                public function assignTable($blockname,$values) {
+                    $this->assigned_table[$blockname]=$values;
+                }
+
 		public function download($name = null){
-			
+
 			$tmp_filename = $this->tmpDir."/".uniqid(true).".docx";
-			
+
 			if(is_null($name)){
 				$name = basename($tmp_filename);
 			}
-			
-			$this->save($tmp_filename);
-			
+
+			@$this->save($tmp_filename);
+
 			header('Content-Description: File Transfer');
 			header('Content-Type: application/octet-stream');
 			header('Content-Disposition: attachment; filename='.$name);
@@ -83,123 +80,92 @@
 			readfile($tmp_filename);
 			exit;
 		}
-		
-		
-		private function saveMainDocument(){
+
+		public function save($outputFile){
+
+			$this->extract();
+
+			$this->processImages();
+
 			$this->content = file_get_contents($this->tmpDir."/word/document.xml");
 			$this->clean();
-			
 			$this->content = $this->parseBlocks($this->content);
-			
-						
 			foreach($this->assigned_field as $field => $value){
 				$this->content = str_replace($field,$value,$this->content);
 			}
-		
+
 			if(count($this->assigned_block)>0){
 				foreach($this->assigned_block as $block => $values){
-					
+
 					foreach($values as $value){
 						$this->addBlock($block,$value);
 					}
-					
+
 				}
 			}
-			
+
 			if(count($this->assigned_nested_block)>0){
 				foreach($this->assigned_nested_block as $array){
 					$this->addNestedBlock($array['block'],$array['values'],$array['parent']);
 				}
 			}
-			
-			file_put_contents($this->tmpDir."/word/document.xml",$this->content);
-		}
-		
-		private function saveHeader(){
-			$this->headerContent = file_get_contents($this->tmpDir."/word/header1.xml");
-						
-			foreach($this->assigned_header_field as $field => $value){
-				$this->headerContent = str_replace($field,$value,$this->headerContent);
-			}
-			
-			file_put_contents($this->tmpDir."/word/header1.xml",$this->headerContent);
-		}
-		
-		
-		private function saveFooter(){
-			$this->footerContent = file_get_contents($this->tmpDir."/word/footer1.xml");
-		
-			foreach($this->assigned_footer_field as $field => $value){
-				$this->footerContent = str_replace($field,$value,$this->footerContent);
-			}
-		
-			file_put_contents($this->tmpDir."/word/footer1.xml",$this->footerContent);
-		}
-		
-		//assigned_header_field
-		public function save($outputFile){
-			
-			$this->extract();
-			
-			$this->processImages();
-			
-			$this->saveMainDocument();
-			
-			
-			if(count($this->assigned_header_field) > 0){
-				$this->saveHeader();
-			}
-			
-			if(count($this->assigned_footer_field) > 0){
-				$this->saveFooter();
-			}
-			
+
+                        if(count($this->assigned_table)>0) {
+                            foreach($this->assigned_table as $table => $values) {
+                                $this->addTable($table, $values);
+                            }
+                        }
+
 			$this->compact($outputFile);
 		}
-		
+
+
 		private function processImages(){
 
 			if(count($this->images)>0){
-				
+
 				if(!is_dir($this->tmpDir."/word/media")){
 					mkdir($this->tmpDir."/word/media");
 				}
-				
+
 				$relationships = file_get_contents($this->tmpDir."/word/_rels/document.xml.rels");
-				
+
 				foreach($this->images as $ref => $file){
 					$xml = '<Relationship Id="phpdocx_'.$ref.'" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/'.basename($file).'" />';
 					copy($file,$this->tmpDir."/word/media/".basename($file));
 					$relationships = str_replace('ships">','ships">'.$xml,$relationships);
 				}
-				
+
 				file_put_contents($this->tmpDir."/word/_rels/document.xml.rels",$relationships);
-				
+
 			}
-			
+
 		}
-		
+
 		private function extract(){
-			
+
 			if(file_exists($this->tmpDir) && is_dir($this->tmpDir)){
 				//clean up of the tmp dir
 				$this->rrmdir($this->tmpDir);
 			}
-			
+
 			mkdir($this->tmpDir);
-			
-			$archive = new PclZip($this->template);
-			$archive->extract(PCLZIP_OPT_PATH, $this->tmpDir);
-			
+
+			@$archive = new PclZip($this->template);
+			@$archive->extract(PCLZIP_OPT_PATH, $this->tmpDir);
+
 		}
-		
+
 		private function compact($output){
-		
-		
-			$archive = new PclZip($output);
-			$archive->create($this->tmpDir,PCLZIP_OPT_REMOVE_PATH,$this->tmpDir);
+
+			file_put_contents($this->tmpDir."/word/document.xml",$this->content);
+
+			@$archive = new PclZip($output);
+			@$archive->create($this->tmpDir,PCLZIP_OPT_REMOVE_PATH,$this->tmpDir);
+
+
 		}
-		
+
 		private function rrmdir($dir) {
 		   if (is_dir($dir)) {
 			 $objects = scandir($dir);
@@ -212,105 +178,135 @@
 			 rmdir($dir);
 		   }
 		}
-		
+
 		private function clean(){
 			$this->content = str_replace('<w:lastRenderedPageBreak/>', '', $this->content); // faster
 			$this->cleanTag(array('<w:proofErr', '<w:noProof', '<w:lang', '<w:lastRenderedPageBreak'));
 			$this->cleanRsID();
 			$this->cleanDuplicatedLayout();
 		}
-		
-		
+
+
 		private function parseBlocks($txt){
-		
+
 			$matches = array();
 			$ret = $txt;
-			
+
 			preg_match_all('/\[start (\w+)\].*?\[end \1\]/s',$txt,$matches);
-			
+
 			if(count($matches[1])>0){
 				foreach($matches[1] as $block){
 					$ret = $this->parseBlock($block,$ret);
 				}
 			}
-			
+
 			return $ret;
-		
+
 		}
-		
+
 		private function parseBlock($name,$txt){
-			
+
 			/* we strip the block markup */
 			$previous_pos = $this->getPreviousPosOf("start ".$name,"<w:p ",$txt);
 			$end_pos = $this->getNextPosOf("start ".$name,":p>",$txt) + 3;
-			
+
 			$txt = str_replace(substr($txt,$previous_pos,$end_pos-$previous_pos),"<!-- start ".$name." -->",$txt);
-			
+
 			$previous_pos = $this->getPreviousPosOf("end ".$name,"<w:p ",$txt);
 			$end_pos = $this->getNextPosOf("end ".$name,":p>",$txt) + 3;
-			
+
 			$txt = str_replace(substr($txt,$previous_pos,$end_pos-$previous_pos),"<!-- end ".$name." -->",$txt);
-			
+
 			/* we save the template content for the block */
 			$block = preg_match("`<!-- start ".$name." -->(.*)<!-- end ".$name." -->`",$txt,$matches);
-			
+
 			if(array_key_exists(1,$matches) > 0){
 				$this->block_content[$name] = $this->parseBlocks($matches[1]);
 			}
-			
-		
+
+
 			/* we remove the template content from the doc */
 			$txt = preg_replace('`<!-- start '.$name.' -->(.*)<!-- end '.$name.' -->`','<!-- start '.$name.' --><!-- end '.$name.' -->',$txt);
 
 			return $txt;
-		
+
 		}
-		
+
 		private function addBlock($blockname,$values){
-			
+
 			$block = $this->block_content[$blockname];
-			
+
 			if(array_key_exists($blockname,$this->block_count)){
 				$this->block_count[$blockname] = $this->block_count[$blockname] + 1;
 			} else {
 				$this->block_count[$blockname] = 1;
 			}
-			
+
 			foreach($values as $id => $val){
 				$block = str_replace($id,$this->filter($val),$block);
 			}
-			
+
 			$this->content = str_replace("<!-- end ".$blockname." -->","<!-- block_".$blockname."_".$this->block_count[$blockname]." -->".$block."<!-- end_block_".$blockname."_".$this->block_count[$blockname]." --><!-- end ".$blockname." -->",$this->content);
-			
+
 		}
-		
+                private function Table($value) {
+                    $border='<w:tblPr><w:tblW w:w="0" w:type="auto"/><w:tblBorders><w:top w:color="auto" w:space="0" w:sz="4" w:val="single"/><w:left w:color="auto" w:space="0" w:sz="4" w:val="single"/><w:bottom w:color="auto" w:space="0" w:sz="4" w:val="single"/><w:right w:color="auto" w:space="0" w:sz="4" w:val="single"/><w:insideH w:color="auto" w:space="0" w:sz="4" w:val="single"/><w:insideV w:color="auto" w:space="0" w:sz="4" w:val="single"/></w:tblBorders><w:tblLook w:val="04A0" w:noVBand="1" w:noHBand="0" w:lastColumn="0" w:firstColumn="1" w:lastRow="0" w:firstRow="1"/></w:tblPr>';
+                    return '<w:tbl>'.$border.$value.'</w:tbl>';
+                }
+                private function addCell($value) {
+                         return '<w:tc>
+                                    <w:p>
+                                        <w:r>
+                                            <w:t>'.$value.'</w:t>
+                                        </w:r>
+                                    </w:p>
+                                 </w:tc>';
+//return '<w:tc><w:tcPr><w:tcW w:w="4045" w:type="dxa"/><w:tcMar><w:left w:w="57" w:type="dxa"/><w:right w:w="57" w:type="dxa"/></w:tcMar></w:tcPr><w:p w:rsidRPr="00E87BBB" w:rsidR="00D61978" w:rsidP="006C6F0B" w:rsidRDefault="00D61978"><w:pPr><w:jc w:val="center"/><w:rPr><w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr></w:pPr><w:r w:rsidRPr="00E87BBB"><w:rPr><w:sz w:val="18"/><w:szCs w:val="18"/></w:rPr><w:t>'.$value.'</w:t></w:r></w:p></w:tc>';
+                }
+                private function addRow($value) {
+                    return '<w:tr>'.$value.'</w:tr>';
+                }
+                private function addTable($table,$values) {
+                    $rows="";
+                    foreach($values as $row) {//по строкам
+                        $cels="";
+                        foreach($row as $cell) {//по столбцам
+                            $cels.=$this->addCell($cell);
+                        }
+                        $rows.=$this->addRow($cels);
+                    }
+                    $tab=$this->Table($rows);
+                    $this->content=str_replace("[table $table]",$tab,$this->content);
+                }
+
+
 		/**
 		 * parent is an array of parents with the blockname as id and index as key
 		 * For example :
 		 * array("experience"=>1,"project"=>5);
 		 */
 		public function addNestedBlock($blockname,$values,$parent){
-			
+
 			if(is_array($parent) && count($parent)>0){
-			
+
 				$block = "";
 				$regex = '`(.*)`';
-				
+
 				$link_nested_count = array();
-				
+
 				foreach($parent as $id => $node){
-					
+
 					if($regex == "`(.*)`"){
 						$regex = str_replace("(.*)","<!-- block_".$id."_".$node." -->(.*)<!-- end_block_".$id."_".$node." -->",$regex);
 					} else {
 						$regex = str_replace("(.*)",".*<!-- block_".$id."_".$node." -->(.*)<!-- end_block_".$id."_".$node." -->.*",$regex);
 					}
-					
+
 					array_push($link_nested_count,$id.$node);
 				}
-				
+
 				$idnested = implode("_",$link_nested_count)."_".$blockname;
-				
+
 				if(array_key_exists($idnested,$this->nested_block_count)){
 					$current_index = $this->nested_block_count[$idnested] + 1;
 					$this->nested_block_count[$idnested]++;
@@ -318,9 +314,9 @@
 					$this->nested_block_count[$idnested] = 1;
 					$current_index = 1;
 				}
-				
+
 				$block_content = $this->block_content[$blockname];
-				
+
 				foreach($values as $row){
 					$current_block = $block_content;
 					foreach($row as $id => $val){
@@ -328,25 +324,25 @@
 					}
 					$block .= $current_block;
 				}
-				
+
 				preg_match($regex,$this->content,$matches);
-				
+
 				$new = str_replace("<!-- end ".$blockname." -->","<!-- block_".$blockname."_".$current_index." -->".$block."<!-- end_block_".$blockname."_".$current_index." --><!-- end ".$blockname." -->",$matches[0]);
-				
+
 				$this->content = preg_replace($regex,$new,$this->content);
-			
+
 			} else {
-				
+
 				die("Parent cannot be empty");
-				
+
 			}
-			
+
 		}
-		
+
 		private function filter($value){
 			return str_replace("&","&amp;",$value);
 		}
-		
+
 		private function cleanRsID() {
 		/* From TBS script
 		 * Delete XML attributes relative to log of user modifications. Returns the number of deleted attributes.
@@ -392,10 +388,10 @@
 			return $nbr_del;
 
 		}
-		
+
 		private function cleanDuplicatedLayout() {
 		// Return the number of deleted dublicates
-		
+
 			$wro = '<w:r';
 			$wro_len = strlen($wro);
 
@@ -442,7 +438,7 @@
 			return $nbr; // number of replacements
 
 		}
-		
+
 		private function foundTag($Txt, $Tag, $PosBeg) {
 		// Found the next tag of the asked type. (Not specific to MsWord, works for any XML)
 			$len = strlen($Tag);
@@ -459,7 +455,7 @@
 			}
 			return false;
 		}
-		
+
 		private function cleanTag($TagLst) {
 		// Delete all tags of the types listed in the list. (Not specific to MsWord, works for any XML)
 			$nbr_del = 0;
@@ -471,11 +467,11 @@
 					if ($pe===false) return false; // error in the XML formating
 					// delete the tag
 					$this->content = substr_replace($this->content, '', $p, $pe-$p+1);
-				} 
+				}
 			}
 			return $nbr_del;
 		}
-		
+
 		private function getNextPosOf($start_string,$needle,$txt){
 			$current_pos = strpos($txt,$start_string);
 			$len = strlen($needle);
@@ -487,10 +483,10 @@
 					$current_pos = $current_pos + 1;
 				}
 			}
-			
+
 			return 0;
 		}
-		
+
 		private function getPreviousPosOf($start_string,$needle,$txt){
 			$current_pos = strpos($txt,$start_string);
 			$len = strlen($needle);
@@ -502,11 +498,11 @@
 					$current_pos = $current_pos - 1;
 				}
 			}
-			
+
 			return 0;
 		}
 
-		
+
 	}
 
 ?>
